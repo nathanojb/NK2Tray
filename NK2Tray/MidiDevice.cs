@@ -7,6 +7,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Linq;
+using NAudio.Wave;
 
 namespace NK2Tray
 {
@@ -35,7 +36,24 @@ namespace NK2Tray
 
         public virtual string SearchString => "wobbo";
 
-        public virtual FaderDef DefaultFaderDef => new FaderDef(false, 1f, 1, true, true, true, 0, 0, 0, 0, MidiCommandCode.ControlChange, MidiCommandCode.ControlChange, MidiCommandCode.ControlChange, MidiCommandCode.ControlChange);
+        public virtual FaderDef DefaultFaderDef =>
+            new FaderDef(false,
+                1f,
+                1,
+                true,
+                true,
+                true,
+                true,
+                0,
+                0,
+                0,
+                0,
+                0,
+                MidiCommandCode.ControlChange,
+                MidiCommandCode.ControlChange,
+                MidiCommandCode.ControlChange,
+                MidiCommandCode.ControlChange,
+                MidiCommandCode.ControlChange);
 
         public MidiDevice()
         {
@@ -174,7 +192,7 @@ namespace NK2Tray
                         foundAssignments = true;
                         MMDevice mmDevice = audioDevices.GetDeviceByIdentifier(ident.IndexOf("|") >= 0 ? ident.Substring(ident.IndexOf("|")+1) : "");
                         fader.Assign(new MixerSession(mmDevice.ID, audioDevices, "Master", SessionType.Master));
-                    }                    
+                    }
                     else if (ident.Length > 0)
                     {
                         foundAssignments = true;
@@ -189,8 +207,11 @@ namespace NK2Tray
                         fader.Unassign();
                     }
                 }
-            }            
-            
+
+                var mul = ConfigSaver.GetAppSettings(fader.faderNumber.ToString() + "m");
+                fader.faderPositionMultiplier = mul != null ? float.Parse(mul) : 1;
+            }
+
             // Load fader 8 as master volume control as default if no faders are set
             if (!foundAssignments)
             {
@@ -200,7 +221,6 @@ namespace NK2Tray
                     SaveAssignments();
                 }
             }
-            
         }
 
         public void SaveAssignments()
@@ -219,8 +239,12 @@ namespace NK2Tray
                 }
                 else
                     ConfigSaver.AddOrUpdateAppSettings(fader.faderNumber.ToString(), "");
+
+                if (fader.faderPositionMultiplier != 1) // don't fill the config with redundant lines - on load we default to 1
+                {
+                    ConfigSaver.AddOrUpdateAppSettings(fader.faderNumber.ToString() + "m", fader.faderPositionMultiplier.ToString());
+                }
             }
         }
-
     }
 }

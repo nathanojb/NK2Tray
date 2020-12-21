@@ -8,50 +8,61 @@ namespace NK2Tray
     public class FaderDef
     {
         public bool delta;
-        public float range;
+        public float faderRange;
         public int channel;
         public bool selectPresent;
         public bool mutePresent;
         public bool recordPresent;
+        public bool subFaderPresent;
         public int faderOffset;
         public int selectOffset;
         public int muteOffset;
         public int recordOffset;
+        public int subFaderOffset;
         public MidiCommandCode faderCode;
         public MidiCommandCode selectCode;
         public MidiCommandCode muteCode;
         public MidiCommandCode recordCode;
+        public MidiCommandCode subFaderCode;
         public int faderChannelOverride;
         public int selectChannelOverride;
         public int muteChannelOverride;
         public int recordChannelOverride;
+        public int subFaderChannelOverride;
 
         public FaderDef(bool _delta, float _range, int _channel,
-            bool _selectPresent, bool _mutePresent, bool _recordPresent,
-            int _faderOffset, int _selectOffset, int _muteOffset, int _recordOffset,
-            MidiCommandCode _faderCode, MidiCommandCode _selectCode, MidiCommandCode _muteCode, MidiCommandCode _recordCode,
-            int _faderChannelOverride = -1, int _selectChannelOverride = -1, int _muteChannelOverride = -1, int _recordChannelOverride = -1)
+            bool _selectPresent, bool _mutePresent, bool _recordPresent, bool _subFaderPresent,
+            int _faderOffset, int _selectOffset, int _muteOffset, int _recordOffset, int _subFaderOffset,
+            MidiCommandCode _faderCode, MidiCommandCode _selectCode, MidiCommandCode _muteCode,
+            MidiCommandCode _recordCode, MidiCommandCode _subFaderCode,
+            int _faderChannelOverride = -1, int _selectChannelOverride = -1, int _muteChannelOverride = -1,
+            int _recordChannelOverride = -1, int _subFaderChannelOverride = -1)
         {
             delta = _delta;
-            range = _range;
+            faderRange = _range;
             channel = _channel;
             selectPresent = _selectPresent;
             mutePresent = _mutePresent;
             recordPresent = _recordPresent;
+            subFaderPresent = _subFaderPresent;
             faderOffset = _faderOffset;
             selectOffset = _selectOffset;
             muteOffset = _muteOffset;
             recordOffset = _recordOffset;
+            subFaderOffset = _subFaderOffset;
             faderCode = _faderCode;
             selectCode = _selectCode;
             muteCode = _muteCode;
             recordCode = _recordCode;
+            subFaderCode = _subFaderCode;
             faderChannelOverride = _faderChannelOverride;
             selectChannelOverride = _selectChannelOverride;
             muteChannelOverride = _muteChannelOverride;
             recordChannelOverride = _recordChannelOverride;
+            subFaderChannelOverride = _subFaderChannelOverride;
         }
     }
+
 
     public class Fader
     {
@@ -73,6 +84,8 @@ namespace NK2Tray
 
         public float[] steps;
         public float pow;
+        public float faderPositionMultiplier;
+        private int primaryFaderHardwareValue;
 
         public Fader(MidiDevice midiDevice, int faderNum)
         {
@@ -83,12 +96,12 @@ namespace NK2Tray
             SetCurve(1f);
         }
 
-        public Fader(MidiDevice midiDevice, int faderNum, FaderDef _faderDef)
+        public Fader(MidiDevice midiDevice, int faderNum, FaderDef controlGroupDefinition)
         {
             parent = midiDevice;
             midiOut = midiDevice.midiOut;
             faderNumber = faderNum;
-            faderDef = _faderDef;
+            this.faderDef = controlGroupDefinition;
             SetCurve(1f);
         }
 
@@ -103,12 +116,13 @@ namespace NK2Tray
         {
             if (!faderDef.delta) return new float[0];
 
-            return Enumerable.Range(0, (int)faderDef.range + 1).Select(stage => getVolFromStage(stage)).ToArray();
+            return Enumerable.Range(0, (int) faderDef.faderRange + 1).Select(stage => getVolumeFromHardwarePosition(stage)).ToArray();
         }
 
-        public float getVolFromStage(int stage)
+        public float getVolumeFromHardwarePosition(float position)
         {
-            return (float)Math.Pow((double)stage / faderDef.range, pow);
+            var virtualPosition = position * faderPositionMultiplier;
+            return (float) Math.Pow(virtualPosition / faderDef.faderRange, pow);
         }
 
         private int inputController => faderNumber + faderDef.faderOffset;
@@ -230,7 +244,7 @@ namespace NK2Tray
             return false;
         }
 
-        public int GetValue(MidiEvent midiEvent)
+        public int GetHardwareValue(MidiEvent midiEvent)
         {
             if (midiEvent.CommandCode == MidiCommandCode.ControlChange)
             {
@@ -338,55 +352,25 @@ namespace NK2Tray
                 }
 
                 // Fader match
-                if (assigned && Match(faderNumber, e.MidiEvent, faderDef.faderCode, faderDef.faderOffset, faderDef.faderChannelOverride))
+                if (assigned && Match(faderNumber, e.MidiEvent, faderDef.faderCode, faderDef.faderOffset,
+                    faderDef.faderChannelOverride))
                 {
-                    if (assignment.sessionType == SessionType.Application)
-                    {
-                        MixerSession newAssignment = assignment.devices.FindMixerSession(assignment.sessionIdentifier); //update list for re-routered app, but only overrides
-                        if (newAssignment == null)                                                                      //if there is new assignments, otherwise, there is no more a inactive
-                        {                                                                                               //MixerSession to hold the label
-                            SetRecordLight(true);
-                            return true;
-                        }
-                        assignment = newAssignment;
-                    }
+                    var hardwareValue = GetHardwareValue(e.MidiEvent);
+                    primaryFaderHardwareValue = hardwareValue;
+                    return SetVolume(hardwareValue);
+                }
 
-                    float newVol;
-
-                    if (faderDef.delta)
-                    {
-                        var val = GetValue(e.MidiEvent);
-                        var volNow = assignment.GetVolume();
-                        var nearestStep = steps.Select((x, i) => new { Index = i, Distance = Math.Abs(volNow - x) }).OrderBy(x => x.Distance).First().Index;
-                        int nextStepIndex;
-
-                        var volumeGoingDown = val > faderDef.range / 2;
-
-                        if (volumeGoingDown)
-                            nextStepIndex = Math.Max(nearestStep - 1, 0);
-                        else
-                            nextStepIndex = Math.Min(nearestStep + 1, steps.Length - 1);
-
-                        newVol = steps[nextStepIndex];
-                        assignment.SetVolume(newVol);
-                    }
-                    else
-                    {
-                        newVol = getVolFromStage(GetValue(e.MidiEvent));
-                        assignment.SetVolume(newVol);
-                    }
-
-                    if (assignment.IsDead())
-                    {
-                        SetRecordLight(true);
-
-                        return true;
-                    }
-
-                    List<Fader> fadersToAffect = GetMatchingFaders();
-                    fadersToAffect.ForEach(fader => fader.parent.SetVolumeIndicator(fader.faderNumber, newVol));
-
-                    return true;
+                // Sub Fader Match
+                if (
+                    faderDef.subFaderPresent
+                    && assigned
+                    && Match(faderNumber, e.MidiEvent, faderDef.subFaderCode, faderDef.subFaderOffset, faderDef.subFaderChannelOverride))
+                {
+                    
+                    this.faderPositionMultiplier = GetHardwareValue(e.MidiEvent) / faderDef.faderRange;
+                    this.steps = calculateSteps();
+                    
+                    return SetVolume(primaryFaderHardwareValue);
                 }
 
                 // Select match
@@ -395,7 +379,7 @@ namespace NK2Tray
                     && Match(faderNumber, e.MidiEvent, faderDef.selectCode, faderDef.selectOffset, faderDef.selectChannelOverride)
                 )
                 {
-                    if (GetValue(e.MidiEvent) != 127) // Only on button-down
+                    if (GetHardwareValue(e.MidiEvent) != 127) // Only on button-down
                         return true;
 
                     Console.WriteLine($@"Attempting to assign current window to fader {faderNumber}");
@@ -426,7 +410,7 @@ namespace NK2Tray
                     && Match(faderNumber, e.MidiEvent, faderDef.muteCode, faderDef.muteOffset, faderDef.muteChannelOverride)
                 )
                 {
-                    if (GetValue(e.MidiEvent) != 127) // Only on button-down
+                    if (GetHardwareValue(e.MidiEvent) != 127) // Only on button-down
                         return true;
 
                     var muteStatus = assignment.ToggleMute();
@@ -453,7 +437,7 @@ namespace NK2Tray
                     && Match(faderNumber, e.MidiEvent, faderDef.recordCode, faderDef.recordOffset, faderDef.recordChannelOverride)
                 )
                 {
-                    if (GetValue(e.MidiEvent) != 127) // Only on button-down
+                    if (GetHardwareValue(e.MidiEvent) != 127) // Only on button-down
                         return true;
 
                     if (WindowTools.IsProcessByNameRunning(applicationName))
@@ -467,7 +451,69 @@ namespace NK2Tray
                 }
             }
             return false;
+        }
 
+        /// <summary>
+        /// This method sets the volume of the assigned ( if any ) application.
+        /// It utilises the "hardwarePosition" passed as a parameter but in sub calls it will 
+        /// augment that value with the value of "faderPositionMultiplier" which is set elsewhere
+        /// </summary>
+        /// <param name="hardwarePosition">Position of the primary fader as reported by the MidiDevice</param>
+        /// <returns></returns>
+        private bool SetVolume(int hardwarePosition)
+        {
+            if (assignment.sessionType == SessionType.Application)
+            {
+                MixerSession
+                    newAssignment =
+                        assignment.devices.FindMixerSession(assignment
+                            .sessionIdentifier); //update list for re-routered app, but only overrides
+                if (newAssignment == null) //if there is new assignments, otherwise, there is no more a inactive
+                {
+                    //MixerSession to hold the label
+                    SetRecordLight(true);
+                    return true;
+                }
+                
+                assignment = newAssignment;
+            }
+
+            float newVol;
+
+            if (faderDef.delta)
+            {
+                var val = hardwarePosition;
+                var volNow = assignment.GetVolume();
+                var nearestStep = steps.Select((x, i) => new {Index = i, Distance = Math.Abs(volNow - x)})
+                    .OrderBy(x => x.Distance).First().Index;
+                int nextStepIndex;
+                var volumeGoingDown = val > faderDef.faderRange / 2;
+
+                if (volumeGoingDown)
+                    nextStepIndex = Math.Max(nearestStep - 1, 0);
+                else
+                    nextStepIndex = Math.Min(nearestStep + 1, steps.Length - 1);
+
+                newVol = steps[nextStepIndex];
+                assignment.SetVolume(newVol);
+            }
+            else
+            {
+                newVol = getVolumeFromHardwarePosition(hardwarePosition);
+                assignment.SetVolume(newVol);
+            }
+            
+            if (assignment.IsDead())
+            {
+                SetRecordLight(true);
+
+                return true;
+            }
+
+            List<Fader> fadersToAffect = GetMatchingFaders();
+            fadersToAffect.ForEach(fader => fader.parent.SetVolumeIndicator(fader.faderNumber, newVol));
+
+            return true;
         }
 
         public bool IsHandling()
